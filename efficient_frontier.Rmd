@@ -1,0 +1,214 @@
+---
+title: "Efficient Frontier using R"
+output:
+        prettydoc::html_pretty:
+                theme: architect
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r working_directory, include=FALSE}
+## Please adjust based on your desired directory
+setwd('/Users/COLLABERA TECH/Downloads/upwork/')
+```
+
+This document presents the steps in plotting efficient frontier in R. GitHub repository is found [here](https://github.com/imjbmkz/efficient_frontier).
+
+<br><br>
+
+### Importing packages required
+
+We will use several packages that will help us pull stocks data and to visualize simulated risks and returns. The following code installs the packages required if they're not yet available. Afterwards, they will be loaded in our current R session.
+
+```{r install_packages, warning=F, message=F}
+## (1) Define the packages that will be needed
+packages <- c('quantmod', 'ggplot2', 'dplyr')
+
+## (2) Install them if not yet installed
+installed_packages <- packages %in% rownames(installed.packages())
+if (any(installed_packages == FALSE)) {
+  install.packages(packages[!installed_packages])
+}
+
+## (3) Load the packages into R session
+invisible(lapply(packages, library, character.only = TRUE))
+```
+
+<br><br>
+
+### Getting adjusted stock prices data
+
+Let's now load the stocks data that we will need. First, we will define a variable called `portfolio` that has the stock symbols that we want.
+
+```{r define_stock_codes}
+## Create a character vector that has the stock codes we need
+portfolio <- c('AUB', 'EW', 'PSB', 'PTC', 'UBP')
+```
+
+Then, let's define the script that will load these stocks into R. We use `lapply` to "*apply*" a function across a list or a vector. The below code is going through all stock codes in `portfolio` variable, and loads it using the `getSymbols` function from quantmod package. Note that we are getting the weekly stocks data, and the parameter `auto.assign` is set to `FALSE` to load the `xts` object into `portfolio` variable. Finally, we give the list index names based on the data that they represent.
+
+```{r, warning=F, message=F}
+## Load the stocks needed into R 
+portfolio <- lapply(portfolio, function(x) {getSymbols(
+        x, periodicity='weekly', auto.assign=FALSE)})
+
+## Set the names in the list to easily access them.
+names(portfolio) <- c('AUB', 'EW', 'PSB', 'PTC', 'UBP')
+```
+
+We can look at the first few rows of the stocks data that we loaded.
+
+```{r head_stocks}
+## View first three rows of selected stock
+head(portfolio$AUB, 3)
+```
+
+For this exercise, we are only interested in the adjusted prices of the stocks. The `Ad` function still from quantmod package does that. We again use `lapply` to use `Ad` function across all other stocks. To better work with the data, this has been transformed into an `xts` object instead of just a `list`.
+
+```{r get_adj_price}
+## Get adjusted prices of all stocks
+portfolio_adjusted <- lapply(portfolio, Ad)
+
+## Transform into xts
+portfolio_adjusted <- do.call(merge, portfolio_adjusted)
+```
+
+Let's see how the data looks like.
+
+```{r}
+## View first 3 rows of the combined different adjusted prices 
+head(portfolio_adjusted, 3)
+```
+
+<br><br>
+
+### Getting weekly log returns
+
+Now that we have our merged adjusted prices of different stock codes, let's get their corresponding weekly returns. We still use `lapply`, `do.call`, and `merge` functions to do it. We are removing the first row since there are no returns on the first observation in the data.
+
+```{r get_weekly_log_ret}
+## Make a list that contains log weekly returns of each stock
+portfolio_adjusted <- lapply(portfolio_adjusted, weeklyReturn, type='log')
+
+## Transform into an xts object
+portfolio_adjusted <- do.call(merge, portfolio_adjusted)
+
+## Adjust the column names 
+colnames(portfolio_adjusted) <- c('AUB', 'EW', 'PSB', 'PTC', 'UBP')
+
+## Remove first row since these do not have returns
+portfolio_adjusted <- portfolio_adjusted[-1]
+```
+
+Let's look at it.
+
+```{r}
+head(portfolio_adjusted, 3)
+```
+
+<br><br>
+
+#### Calculating return and risk statistics
+
+Now that we have the weekly returns per asset, we can now calculate the statistics needed to simulate portfolio risk and returns at different weights. Let's start by making our variance-covariance matrix. We call the function `cov` and pass the `xts` object that has the portfolio returns. We store the results inside the `varCovMat` variable.
+
+```{r varcov}
+## Generate variance-covariance matrix
+varCovMat <- var(portfolio_adjusted)
+
+## Let's print it
+varCovMat
+```
+
+We then need to turn it into annum variance-covariance. We do this by simply multiplying it by 52. It is 52 because our data is on a weekly scale (52 represents 52 weeks).
+
+```{r varcov_annum}
+## Multiply by 52 to get annum var-cov in weekly scale
+varCovMat <- varCovMat * 52
+
+## Print results
+varCovMat
+```
+
+<br><br>
+
+#### Defining random weight combinations
+
+We will define 10,000 combinations of random weights that we will use for each asset that we have. Using these weights, we will generate portfolio risks and returns for simulation purposes. We will set the seed to ensure that we get the same results every time we run these scripts.
+
+```{r random_weights}
+## Set seed for reproducibility
+set.seed(42)
+
+## Generate 50,000 random numbers
+rand_weights <- runif(50000)
+
+## Transform it into a matrix; each row will be a combination of weights
+rand_weights <- matrix(rand_weights, nrow=10000, ncol=5)
+
+## Add sixth column with just NAs
+rand_weights <- cbind(rand_weights, rep(NA, 10000))
+
+## Add names
+colnames(rand_weights) <- c('AUB', 'EW', 'PSB', 'PTC', 'UBP', 'total')
+
+## Loop to convert into actual weights
+for (i in 1:10000) {
+        rand_weights[i, 6] <- sum(rand_weights[i, 1:5])
+        rand_weights[i, 1:5] <- 
+                rand_weights[i, 1:5] / rand_weights[i, 6]
+}
+
+## Delete total column
+rand_weights <- rand_weights[, -6]
+```
+
+<br><br>
+
+#### Defining random weight combinations
+
+We are now ready to calculate for the portfolio returns and risks. The following are the corresponding formula for each metric.
+
+$$
+P_{Rt} = \sum P_w * P_{Cov}
+$$
+
+Where, $P_Rt$ is our portfolio return, $P_w$ are the asset weights, then $P_{Cov}$ is the individual covariance per variable. We get $P_Rt$ by getting the sum of the product of weights and covariance.
+
+$$
+P_{Rs} = \sqrt \sum (X*P_w) * X
+$$
+
+Where, $P_Rs$ is our portfolio risk, $P_w$ are the asset weights, then $X$ is the variance-covariance matrix. We get $P_Rs$ by getting the matrix product of $X$ and $P_w$ first, then multiply by $X$, and get the sum. Finally, take the sum's square root.
+
+Let's code these in R.
+
+```{r get_risk_return}
+## Create column placeholders
+portfolio_risk <- rep(NA, 10000)
+portfolio_returns <- rep(NA, 10000)
+
+## loop to calculate risk and return per weights 
+for (i in 1:10000) {
+        weights <- rand_weights[i, ]
+        portfolio_risk[i] <- sqrt(sum((weights %*% varCovMat) * weights))
+        portfolio_returns[i] <- sum(weights * varCovMat[1, ])
+}
+
+## Make a data frame to be used for ggplot2
+portfolio_df <- data.frame(portfolio_risk, portfolio_returns)
+```
+
+We already have the simulated risks and returns based from the randomized weights that we've generated. Using ggplot2 package, we can now plot this graph.
+
+```{r plot_eff_frontier}
+portfolio_df %>% 
+        ggplot(aes(x=portfolio_risk, y=portfolio_returns)) + 
+        geom_point(alpha=0.2) + 
+        theme_minimal() +
+        labs(
+                title='Efficient Frontier graph of 5 assets',
+                subtitle='(AUB, EW, PSB, PTC, UBP)')
+```
